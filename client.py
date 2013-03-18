@@ -6,8 +6,6 @@ hallo
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-
 import os
 from enthought.traits.api import SingletonHasTraits, Instance, Property, Int, Float, Range,\
                                  Bool, Array, Str, Enum, Button, Tuple, List, on_trait_change,\
@@ -38,16 +36,21 @@ from enthought.chaco.api import Plot, ScatterPlot, CMapImagePlot, ArrayPlotData,
 import socket
 
 class interface(HasTraits):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # communication attributes
+    #s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     ip = String("127.0.0.1")
-    port = Int(22222)
-    get_sock=Button('connect to Server')
-    
+    port = Int(3000)
+    connect=Button('connect to Server')
     send=Button('send')
     message=String()
     History= String()
     load_from_file=Button(label='load from file')
-    #Image1 = Instance(Plot)
+    # camera settings
+    integration=Range(low=1, high=1000, value = 20, label = 'Integration')
+    gain=Float(2.5, label='Gain' )
+    average=Range(low=1, high=100,value=10, label= 'Average')
+    gamma = Float(0.9, label = 'Gamma')
+    send_settings=Button(label = 'Send Settings')
     
     image_path = File('C:/Python27/cubert/image.bmp')
     from_file=Bool(True)
@@ -245,31 +248,75 @@ class interface(HasTraits):
         self.show_lines=True
         print 'hallo'
             
-    def _get_sock_fired(self):
+    def _connect_fired(self):
         try:
+            self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.s.connect((self.ip, self.port))
+            self.status = 'CONNECTED'
+            del self.s
             return 0
         except:
             print 'error'
+            self.status='CONNECTION ERROR'
+            return 1
 
+            
+    def _send_settings_fired(self):
+        """  sends commands to adjust the settings to the server """
+        self._send('<Cmd>SetInt="' +str(self.integration)+ '"</Cmd>')
+        self._receive()
+        self._send('<Cmd>SetGan="' +str(self.gain)+ '"</Cmd>')
+        self._receive()
+        self._send('<Cmd>SetAvg="'+str(self.average)+ '"</Cmd>')
+        self._receive()
+        self._send('<Cmd>SetGamma="' +str(self.gamma)+ '"</Cmd>')
+        self._receive()
+        return 0
             
     def _send_fired(self):
         try:
-            self.s.send(self.message)       
-            self.History = self.History  + self.message + "\n"
-            self.message = ''
-            antwort = self.s.recv(1024) 
-            self.History = self.History  + antwort + "\n"
+            # open socket
+            self._send(self.message)       
+            self._receive()
+            self.message = ''            
             return 0
         except:
             self.History = self.History + "ERROR SENDING: " + self.message + "\n"
             return 1
             
+    def _send(self, msg):
+        print 'start send'
+        self.message = msg
+        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.s.connect((self.ip, self.port))
+        totalsent = 0
+        while totalsent < len(msg):
+            sent = self.s.send(msg[totalsent:])
+            if sent == 0:
+                raise RuntimeError("socket connection broken")
+            totalsent = totalsent + sent
+        self.History = self.History  + self.message + "\n"
+        print 'end send'
         
-            
-    MainView= View(Item('status', style='readonly'), Tabbed(HGroup(HGroup(VGroup(Item('ScanPlotContainer', editor=ComponentEditor(), show_label=False, resizable=True),HGroup(Item('AddTargetPoint'), Item('RemoveTargetPoint'), Item('plot_targets'), Item('show_lines'), Item('x'), Item('y'))),Group(Item('LinePlotContainer', editor=ComponentEditor(), show_label=False, resizable=True ),visible_when='show_lines')) ,label = 'Data'), 
-                          VGroup(Item('ip'), Item('port'), Item('get_sock'),VGroup(Item('History', springy=True, style='custom'), Item('message'),Item('send')), Item('from_file'),
-                                 Item('image_path', style='custom', visible_when='from_file'), Item('load_from_file'), label = 'Connection')), resizable=True, title = 'CUBERT Interface')
+    def _receive(self):
+        msg = ''
+        print 'start rec.'
+        while len(msg) < len(self.message):
+            chunk = self.s.recv(len('received:' + self.message)-len(msg))
+            if chunk == '':
+                raise RuntimeError("socket connection broken")
+            msg = msg + chunk
+        del self.s
+        print 'end_receive'
+        print msg
+        self.History = self.History  + msg + "\n"
+        self.message=''
+        return msg
+        
+    MainView= View(Item('status', style='readonly'), 
+                   Tabbed(HGroup(HGroup(VGroup(Item('ScanPlotContainer', editor=ComponentEditor(), show_label=False, resizable=True),HGroup(Item('AddTargetPoint'), Item('RemoveTargetPoint'), Item('plot_targets'), Item('show_lines'), Item('x'), Item('y'))),Group(Item('LinePlotContainer', editor=ComponentEditor(), show_label=False, resizable=True ),visible_when='show_lines')) ,label = 'Data'), 
+                          Group(HGroup(VGroup(Item('status', style='readonly'), Item('ip'), Item('port'), Item('connect')), VGroup(Item('integration'), Item('gain'), Item('average'), Item('gamma'), Item('send_settings'))),VGroup(Item('History', springy=True, style='custom'), Item('message'),Item('send'), Item('from_file'),
+                                 Item('image_path', style='custom', visible_when='from_file'), Item('load_from_file')), label = 'Connection')), resizable=True, title = 'CUBERT Interface')
 
 
 
