@@ -34,6 +34,7 @@ from enthought.chaco.api import Plot, ScatterPlot, CMapImagePlot, ArrayPlotData,
                                 Spectral, ColorBar, LinearMapper, DataView,\
                                 LinePlot, ArrayDataSource, HPlotContainer
 import socket
+from PIL import Image
 
 class interface(HasTraits):
     # communication attributes
@@ -51,6 +52,20 @@ class interface(HasTraits):
     average=Range(low=1, high=100,value=10, label= 'Average')
     gamma = Float(0.9, label = 'Gamma')
     send_settings=Button(label = 'Send Settings')
+    # Calibration
+    dark=Button(label = 'Dark')
+    reference = Button(label = 'Reference')
+    filename = String()
+    # Measurement
+    mode = Enum('Reflectance', 'Dark Subtract', 'Raw Spectra')
+    capture = Button(label='Capture')
+    R = Range(low=450, high=950,value=660, label= 'R', mode='slider')
+    G = Range(low=450, high=950,value=560, label= 'G', mode='slider')
+    B = Range(low=450, high=950,value=470, label= 'B', mode='slider')
+    
+    filename_dark=String()
+    filename_reference= String()
+    filename_cube=String()
     
     image_path = File('C:/Python27/cubert/image.bmp')
     from_file=Bool(True)
@@ -62,6 +77,7 @@ class interface(HasTraits):
     ScanImage=Instance(CMapImagePlot, transient =True)
     cursor=Instance(BaseCursorTool, transient = True)
     zoom_tool=Instance(ZoomTool, transient = True)
+
     TargetPlot = Instance( ScatterPlot, transient=True )
     # linePlot
     LinePlotContainer= Instance(OverlayPlotContainer, transient=True)
@@ -72,8 +88,8 @@ class interface(HasTraits):
     AddTargetPoint = Button(label='Add Target', desc='Append current position to List of Targets')
     RemoveTargetPoint = Button(label='Remove Target', desc='Remove Last Target from List of Targets')
     TargetList = List()
-    x=Float()
-    y=Float()
+    x=Float(label = 'X-Pixel')
+    y=Float(label = 'Y-Pixel')
     x_range=Tuple(0,100)
     y_range=Tuple(0,100)
     status = String('OFFLINE')
@@ -129,7 +145,8 @@ class interface(HasTraits):
     def _TargetPlot_default(self):
         return self.ScanPlot.plot( ('x', 'y'), type='scatter', marker='cross', marker_size=6, line_width=1.0, color='black')[0]
     def _ScanImage_default(self):
-        return self.ScanPlot.img_plot('image',xbounds=(self.x_range[0],self.x_range[-1]), ybounds=(self.y_range[0], self.y_range[-1]))[0]      
+        return self.ScanPlot.img_plot('image',xbounds=(0,100), ybounds=(0,100))[0] 
+        
     def _cursor_default(self):
         cursor = CursorTool(self.ScanImage,
                             drag_button='left',
@@ -138,49 +155,54 @@ class interface(HasTraits):
         cursor._set_current_position('x', (self.x, self.y))
         return cursor
     def _zoom_tool_default(self):
-        return ZoomTool(self.ScanImage, enable_wheel=False)
+        return ZoomTool(self.ScanImage, enable_wheel=True)
+
     def _ScanPlotContainer_default(self):
         ScanImage = self.ScanImage
         ScanImage.x_mapper.domain_limits = (self.x_range[0],self.x_range[1])
         ScanImage.y_mapper.domain_limits = (self.y_range[0],self.y_range[1])
         ScanImage.overlays.append(self.zoom_tool)
         ScanImage.overlays.append(self.cursor)
-        #colormap = ScanImage.color_mapper
-#        colorbar = ColorBar(index_mapper=LinearMapper(range=colormap.range),
-#                            color_mapper=colormap,
-#                            plot=self.ScanPlot,
-#                            orientation='v',
-#                            resizable='v',
-#                            width=20,
-#                            height=400,
-#                            padding=50)
+        
+        colormap = ScanImage.color_mapper
+        colorbar = ColorBar(index_mapper=LinearMapper(range=colormap.range),
+                            color_mapper=colormap,
+                            plot=self.ScanPlot,
+                            orientation='v',
+                            resizable='v',
+                            width=20,
+                            height=400,
+                            padding=50)
 
         container = HPlotContainer()
         container.add(self.ScanPlot)
-        #container.add(colorbar)
+        container.add(colorbar)
 
         return container
 
         
     def _image_changed(self):
+        
         self.ScanData.set_data('image', self.image)
+        self.ScanImage.x_mapper.domain_limits = (0,len(self.image[0,:]))
+        self.ScanImage.y_mapper.domain_limits = (0,len(self.image[:,0]))
+        
         self.ScanPlot.request_redraw()
 
     def set_cursor_from_position(self):
         self.cursor.on_trait_change(handler=self.set_position_from_cursor, name='current_position', remove=True) 
-        self.cursor.current_position = (self.x, self.y)
+        self.cursor.current_position = (self.x/len(self.image[0,:])*100 , self.y*100/len(self.image[:,0]))
         self.cursor.on_trait_change(handler=self.set_position_from_cursor, name='current_position')
 
     def set_position_from_cursor(self):
         self.on_trait_change(handler=self.set_cursor_from_position, name='x', remove=True)
         self.on_trait_change(handler=self.set_cursor_from_position, name='y', remove=True)
-        self.x, self.y = self.cursor.current_position
+        self.x, self.y = ( int(float(self.cursor.current_position[0])*len(self.image[0,:])/100), int(float(self.cursor.current_position[1])*len(self.image[:,0])/100))
         self.on_trait_change(handler=self.set_cursor_from_position, name='x')
         self.on_trait_change(handler=self.set_cursor_from_position, name='y')
 
 
-    def _load_from_file_fired(self):   
-        self.image=np.random.rand(self.x_range[1], self.y_range[1])
+    
         
     def _LinePlotContainer_default(self):
         container = OverlayPlotContainer(padding = 50, fill_padding = True,
@@ -264,20 +286,20 @@ class interface(HasTraits):
     def _send_settings_fired(self):
         """  sends commands to adjust the settings to the server """
         self._send('<Cmd>SetInt="' +str(self.integration)+ '"</Cmd>')
-        self._receive()
+        #self._receive()
         self._send('<Cmd>SetGan="' +str(self.gain)+ '"</Cmd>')
-        self._receive()
+        #self._receive()
         self._send('<Cmd>SetAvg="'+str(self.average)+ '"</Cmd>')
-        self._receive()
+       # self._receive()
         self._send('<Cmd>SetGamma="' +str(self.gamma)+ '"</Cmd>')
-        self._receive()
+       # self._receive()
         return 0
             
     def _send_fired(self):
         try:
             # open socket
             self._send(self.message)       
-            self._receive()
+           # self._receive()
             self.message = ''            
             return 0
         except:
@@ -297,8 +319,7 @@ class interface(HasTraits):
             totalsent = totalsent + sent
         self.History = self.History  + self.message + "\n"
         print 'end send'
-        
-    def _receive(self):
+        # receiving--------------------------
         msg = ''
         print 'start rec.'
         while len(msg) < len(self.message):
@@ -313,10 +334,86 @@ class interface(HasTraits):
         self.message=''
         return msg
         
-    MainView= View(Item('status', style='readonly'), 
-                   Tabbed(HGroup(HGroup(VGroup(Item('ScanPlotContainer', editor=ComponentEditor(), show_label=False, resizable=True),HGroup(Item('AddTargetPoint'), Item('RemoveTargetPoint'), Item('plot_targets'), Item('show_lines'), Item('x'), Item('y'))),Group(Item('LinePlotContainer', editor=ComponentEditor(), show_label=False, resizable=True ),visible_when='show_lines')) ,label = 'Data'), 
-                          Group(HGroup(VGroup(Item('status', style='readonly'), Item('ip'), Item('port'), Item('connect')), VGroup(Item('integration'), Item('gain'), Item('average'), Item('gamma'), Item('send_settings'))),VGroup(Item('History', springy=True, style='custom'), Item('message'),Item('send'), Item('from_file'),
-                                 Item('image_path', style='custom', visible_when='from_file'), Item('load_from_file')), label = 'Connection')), resizable=True, title = 'CUBERT Interface')
+    def _dark_fired(self):
+        duration=(float((130+self.integration)*self.average))/1000
+        ## Communicate with server
+        #self.message = '<Cmd>CapDark</Cmd>'
+        #message = self._send(self.message)
+        ## Read measurement Data
+        message ='C:\Users\FlorianFetzer\Desktop\Sample Data\Cubert\Settings\Dark.jpg'
+        if(message !=''):
+            self.filename_dark = message;
+            di = Image.open(self.filename_dark)
+            di_2_arr = np.asarray(di)
+            #self.image = di_2_arr
+            print len(di_2_arr[:,0]), len(di_2_arr[0,:])
+            self.image=np.random.rand(len(di_2_arr[:,0]), len(di_2_arr[0,:]))
+        return 0
+        
+    def _reference_fired(self):
+        duration=(float((130+self.integration)*self.average))/1000
+        ## Communicate with server
+        #self.message = '<Cmd>CapDark</Cmd>'
+        #message = self._send(self.message)
+        ## Read measurement Data
+        message ='C:\Users\FlorianFetzer\Desktop\Sample Data\Cubert\Settings\Dark.jpg'
+        if(message !=''):
+            self.filename_reference = message;
+            di = Image.open(self.filename_reference)
+            di_2_arr = np.asarray(di)
+            #self.image = di_2_arr
+            print len(di_2_arr[:,0]), len(di_2_arr[0,:])
+            self.image=np.random.rand(len(di_2_arr[:,0]), len(di_2_arr[0,:]))
+        return 0
+
+        
+    def _capture_fired(self):
+        duration=float((130+self.integration)*self.average)/1000;
+       ## Define filename of measurement
+        Filename=self.filename
+        if (Filename != ''):
+            Filename = '="' + Filename + '"'
+        if self.mode == 'Reflectance':
+            message = self._send('<Cmd>CapCube'+ Filename +  '</Cmd>')
+        if self.mode == 'Dark Subtract':
+            message = self._send('<Cmd>CapDS'+ Filename + '</Cmd>')
+        if self.mode == 'Raw Spectra':
+            message = self._send('<Cmd>CapRaw' + Filename + '</Cmd>')
+        self.update_view(self, message) # to be defined
+            
+        return 0
+        
+    def _update_view(self, message):
+        ## Update view loads a pseudo RGB image and updates the preview of the measurement
+        Filename_Cube=message;
+        ## Get RGB channels
+        R=np.floor(self.R*138)
+        G=np.floor(self.G*138)
+        B=np.floor(self.B*138)
+        ## Load RGB pseudo image
+        message=client_send('<Cmd>GetThreeChannel="' + str(B) + ';' +  str(G) + ';' +str(R) +'"</Cmd>')
+        if(message != ''):
+            Picture=imread([message '.jpg']);
+            ## Display Image
+        ## Draw one spectra with x=450, y=450 
+        DrawDatapoint(hObject,handles,450,450)        
+        
+    def _load_from_file_fired(self):
+         
+        self.image=np.random.rand(30, 50)
+        return 0
+        
+    MainView= View( 
+                   Tabbed(HGroup(HGroup(VGroup(Item('ScanPlotContainer', editor=ComponentEditor(), show_label=False, resizable=True),
+                                               HGroup(Item('AddTargetPoint'), Item('RemoveTargetPoint'), Item('plot_targets'), Item('show_lines'), Item('x'), Item('y'))),
+                                                Group(Item('LinePlotContainer', editor=ComponentEditor(), show_label=False, resizable=True ),visible_when='show_lines')) ,label = 'Analysis'), 
+                          Group(HGroup(VGroup(Item('status', style='readonly'), Item('ip'), Item('port'), Item('connect'), label = 'Connection'),
+                                       VGroup(Item('integration'), Item('gain'), Item('average'), Item('gamma'), Item('send_settings', show_label = False), label = 'Settings'), 
+                                       VGroup(Item('dark',show_label = False), Item('reference',show_label = False), Group(Item('filename', show_label = False), label = 'Filename'), label = 'Calibration'), 
+                                       VGroup(Group(Item('mode', show_label=False ), label = 'Measurement-Mode'),Group(Item('R'), Item('G'), Item('B'), label = 'Pseudo RGB'), Item('capture',show_label = False)), 
+                                       VGroup(Group(Item('image_path',show_label = False, style='custom'), label = 'Select File'), Item('load_from_file', show_label = False), label = 'Data Analysis')),
+                                VGroup(Item('History', springy=True, style='custom'), Item('message'),Item('send'))
+                          , label = 'Camera')), resizable=True, title = 'CUBERT Interface')
 
 
 
